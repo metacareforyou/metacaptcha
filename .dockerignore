@@ -1,0 +1,14 @@
+fly.toml
+Dockerfile
+.dockerignore
+docker-compose.yaml
+node_modules
+.git
+fly.bat
+.vscode
+run.bat
+build.bat
+cert.pem
+decryptedkey.pemp
+key.pem
+README.md
