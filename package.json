@@ -18,7 +18,9 @@
     "author": "Your Name",
     "license": "MIT",
     "dependencies": {
+        "@google-cloud/bigtable": "^5.1.2",
         "axios": "^1.7.7",
+        "bn.js": "^5.2.1",
         "cors": "^2.8.5",
         "crypto": "^1.0.1",
         "dotenv": "^16.4.5",

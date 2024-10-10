@@ -9,7 +9,7 @@ require('dotenv').config();
 const EC = require('elliptic').ec;
 const BN = require('bn.js'); // Import BN.js for big number support
 const NodeRSA = require('node-rsa');
-
+const { Bigtable } = require('@google-cloud/bigtable');
 // Initialize EC and RSA
 const ec = new EC('secp256k1'); // Using the secp256k1 curve
 const rsa = new NodeRSA({ b: 512 }); // RSA with 512-bit key for example
@@ -85,19 +85,34 @@ downloadBlockedIPs();
 // Add blockIPs middleware before any other routes
 app.use(blockIPs);
 
-// Function to calculate CAPTCHA difficulty based on multiple factors
+// Function to log CAPTCHA event to Bigtable
+async function logCaptchaEvent(captchaData) {
+  const rowKey = `captcha-${Date.now()}`; // Unique row key based on timestamp
+
+  const row = table.row(rowKey);
+  const data = {
+    'event:timestamp': { value: Date.now().toString() },
+    'event:ip': { value: captchaData.ip },
+    'event:ecSolved': { value: captchaData.ecSolved.toString() },
+    'event:rsaSolved': { value: captchaData.rsaSolved.toString() },
+    'event:k': { value: captchaData.k || 'N/A' },
+    'event:result': { value: captchaData.result },
+    'event:difficulty': { value: captchaData.difficulty.toString() },
+  };
+
+  await row.create(data);
+}
+
+// Function to calculate CAPTCHA difficulty
 function calculateDifficulty(req) {
   const agent = useragent.parse(req.headers['user-agent']);
-  const ip = req.ip.replace(/^::ffff:/, ''); // Normalize IPv4-mapped IPv6 addresses
+  const ip = req.ip;
 
-  console.log(`Calculating difficulty for IP: ${ip}, User-Agent: ${agent.toString()}`);
-
-  // Strategy 2: Adjust based on device type (mobile vs desktop)
+  // Adjust difficulty based on device type (mobile vs desktop)
   const isMobile = agent.device.family !== 'Other';
   let difficulty = isMobile ? 3 : 5; // Base difficulty
-  console.log(`Initial difficulty based on device type (isMobile: ${isMobile}): ${difficulty}`);
 
-  // Strategy 3: Dynamic difficulty based on request frequency
+  // Dynamic difficulty based on request frequency
   const now = Date.now();
   if (!ipRequestLog[ip]) {
     ipRequestLog[ip] = { count: 0, lastRequestTime: now };
@@ -106,38 +121,27 @@ function calculateDifficulty(req) {
   const timeSinceLastRequest = now - ipRequestLog[ip].lastRequestTime;
   ipRequestLog[ip].lastRequestTime = now;
 
-  // Increase difficulty for rapid requests (less than 10 seconds apart)
+  // Increase difficulty for rapid requests
   if (timeSinceLastRequest < 10000) {
     difficulty += 2;
-    console.log(`Increased difficulty due to rapid requests: ${difficulty}`);
   }
 
-  // Strategy 4: IP reputation-based adjustment
+  // Adjust difficulty based on IP reputation
   ipRequestLog[ip].count += 1;
-  console.log(`Request count for IP ${ip}: ${ipRequestLog[ip].count}`);
-
   if (ipRequestLog[ip].count > 50) {
-    // If the IP has made over 50 requests in a 15-minute window, increase difficulty
     difficulty += 3;
-    console.log(`Increased difficulty due to high request count: ${difficulty}`);
   } else if (ipRequestLog[ip].count < 10) {
-    // If IP is a trusted (few requests), decrease difficulty
     difficulty -= 1;
-    console.log(`Decreased difficulty due to low request count: ${difficulty}`);
   }
 
-  // Strategy 5: Progressive difficulty scaling over session
+  // Progressive difficulty scaling over session
   if (ipRequestLog[ip].count >= 10) {
-    difficulty += Math.floor(ipRequestLog[ip].count / 10); // Increase for every 10 requests in session
-    console.log(`Increased difficulty due to session scaling: ${difficulty}`);
+    difficulty += Math.floor(ipRequestLog[ip].count / 10);
   }
 
-  // Clamp the difficulty between a reasonable range
-  difficulty = Math.min(Math.max(difficulty, 1), 10);
-  console.log(`Final calculated difficulty: ${difficulty}`);
-
-  return difficulty;
+  return Math.min(Math.max(difficulty, 1), 10); // Clamp between 1 and 10
 }
+
 
 // Rate limiter middleware to prevent abuse
 const limiter = rateLimit({
@@ -164,44 +168,131 @@ app.get('/api/captcha-challenge', (req, res) => {
   });
 });
 
-app.post('/api/verify-captcha', (req, res) => {
+// Initialize Bigtable client
+const bigtable = new Bigtable();
+const instance = bigtable.instance('your-instance-id'); // Replace with your Bigtable instance ID
+const table = instance.table('captcha-log'); // Replace with your table name
+
+// Function to log CAPTCHA event to Bigtable
+async function logCaptchaEvent(captchaData) {
+  const rowKey = `captcha-${Date.now()}`; // Unique row key based on timestamp
+
+  const row = table.row(rowKey);
+  const data = {
+    'event:timestamp': { value: Date.now().toString() },
+    'event:ip': { value: captchaData.ip },
+    'event:ecSolved': { value: captchaData.ecSolved.toString() },
+    'event:rsaSolved': { value: captchaData.rsaSolved.toString() },
+    'event:k': { value: captchaData.k || 'N/A' },
+    'event:result': { value: captchaData.result },
+    'event:difficulty': { value: captchaData.difficulty.toString() },
+  };
+
+  await row.create(data);
+}
+
+// Function to calculate CAPTCHA difficulty
+function calculateDifficulty(req) {
+  const agent = useragent.parse(req.headers['user-agent']);
+  const ip = req.ip;
+
+  // Adjust difficulty based on device type (mobile vs desktop)
+  const isMobile = agent.device.family !== 'Other';
+  let difficulty = isMobile ? 3 : 5; // Base difficulty
+
+  // Dynamic difficulty based on request frequency
+  const now = Date.now();
+  if (!ipRequestLog[ip]) {
+    ipRequestLog[ip] = { count: 0, lastRequestTime: now };
+  }
+
+  const timeSinceLastRequest = now - ipRequestLog[ip].lastRequestTime;
+  ipRequestLog[ip].lastRequestTime = now;
+
+  // Increase difficulty for rapid requests
+  if (timeSinceLastRequest < 10000) {
+    difficulty += 2;
+  }
+
+  // Adjust difficulty based on IP reputation
+  ipRequestLog[ip].count += 1;
+  if (ipRequestLog[ip].count > 50) {
+    difficulty += 3;
+  } else if (ipRequestLog[ip].count < 10) {
+    difficulty -= 1;
+  }
+
+  // Progressive difficulty scaling over session
+  if (ipRequestLog[ip].count >= 10) {
+    difficulty += Math.floor(ipRequestLog[ip].count / 10);
+  }
+
+  return Math.min(Math.max(difficulty, 1), 10); // Clamp between 1 and 10
+}
+
+// Modify the post handler to log to Bigtable and use calculated difficulty
+app.post('/api/verify-captcha', async (req, res) => {
   const { ecSolution, rsaSolution } = req.body;
+  const clientIP = req.ip; // Get the client's IP address
+  let k;
 
   console.log(`Received CAPTCHA verification request`);
 
+  // Calculate difficulty dynamically
+  const difficulty = calculateDifficulty(req);
+
   // Step 1: Validate EC solution
-  const { k, P, Q } = ecSolution;
+  try {
+    const { k: solvedK, P, Q } = ecSolution;
+    k = solvedK;
 
-  // Convert `P` and `Q` back to elliptic curve points
-  const basePoint = ec.curve.point(P[0], P[1]); // Base point `G`
-  const solutionQ = ec.curve.point(Q[0], Q[1]); // Point `Q` from client
-  
-  // Create BN instance from `k`
-  const kBN = new BN(k, 10); // Convert k from string to BN object
+    const basePoint = ec.curve.point(P[0], P[1]);
+    const solutionQ = ec.curve.point(Q[0], Q[1]);
+    const kBN = new BN(k, 10);
+    const expectedQ = basePoint.mul(kBN);
 
-  // Compute `expectedQ = k * G`
-  const expectedQ = basePoint.mul(kBN); // Use BN for multiplication
-
-  if (expectedQ.eq(solutionQ)) {
-    console.log('EC challenge solved successfully');
-
-    // Step 2: Validate RSA solution using `k`
-    try {
-      const decryptedMessage = rsa.decrypt(rsaSolution.encryptedMessage, 'utf8');
-      if (decryptedMessage.includes(k)) {
-        console.log('RSA challenge solved successfully');
-        return res.json({ valid: true });
-      } else {
-        console.log('RSA verification failed');
-        return res.status(400).json({ valid: false, message: 'Invalid RSA solution' });
-      }
-    } catch (error) {
-      console.log('Decryption error:', error);
-      return res.status(400).json({ valid: false, message: 'RSA decryption failed' });
+    if (!expectedQ.eq(solutionQ)) {
+      throw new Error('EC verification failed');
     }
-  } else {
-    console.log('EC verification failed');
-    res.status(400).json({ valid: false, message: 'Invalid EC solution' });
+    console.log('EC challenge solved successfully');
+  } catch (error) {
+    /*await logCaptchaEvent({
+      ip: clientIP,
+      ecSolved: false,
+      rsaSolved: false,
+      result: 'Failed',
+      difficulty,
+    });*/
+    return res.status(400).json({ valid: false, message: 'Invalid EC solution' });
+  }
+
+  // Step 2: Validate RSA solution using `k`
+  try {
+    const decryptedMessage = rsa.decrypt(rsaSolution.encryptedMessage, 'utf8');
+    if (!decryptedMessage.includes(k)) {
+      throw new Error('RSA verification failed');
+    }
+    console.log('RSA challenge solved successfully');
+    /*await logCaptchaEvent({
+      ip: clientIP,
+      ecSolved: true,
+      rsaSolved: true,
+      k,
+      result: 'Success',
+      difficulty,
+    });*/
+    return res.json({ valid: true });
+  } catch (error) {
+    console.error('RSA decryption error:', error);
+    /*await logCaptchaEvent({
+      ip: clientIP,
+      ecSolved: true,
+      rsaSolved: false,
+      k,
+      result: 'Failed',
+      difficulty,
+    });*/
+    return res.status(400).json({ valid: false, message: 'Invalid RSA solution' });
   }
 });
 
