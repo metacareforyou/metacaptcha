@@ -7,6 +7,7 @@ const axios = require('axios');
 const cors = require('cors');
 require('dotenv').config();
 const EC = require('elliptic').ec;
+const BN = require('bn.js'); // Import BN.js for big number support
 const NodeRSA = require('node-rsa');
 
 // Initialize EC and RSA
@@ -175,8 +176,11 @@ app.post('/api/verify-captcha', (req, res) => {
   const basePoint = ec.curve.point(P[0], P[1]); // Base point `G`
   const solutionQ = ec.curve.point(Q[0], Q[1]); // Point `Q` from client
   
+  // Create BN instance from `k`
+  const kBN = new BN(k, 10); // Convert k from string to BN object
+
   // Compute `expectedQ = k * G`
-  const expectedQ = basePoint.mul(new ec.bn(k)); // Ensure `k` is a BN object for multiplication
+  const expectedQ = basePoint.mul(kBN); // Use BN for multiplication
 
   if (expectedQ.eq(solutionQ)) {
     console.log('EC challenge solved successfully');
@@ -224,10 +228,8 @@ function generateECChallenge() {
 
 
 const port = process.env.PORT || 8449;
-console.log(process.env.FLY_ENV)
-
 // Create HTTPS server
-if ('Dev' === 'Dev'){
+if (process.env.FLY_ENV === 'Dev'){
     const fs = require('fs');
     const path = require('path');//const rateLimit = require("express-rate-limit");
     const https = require('https');
