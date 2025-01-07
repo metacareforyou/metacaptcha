@@ -316,7 +316,7 @@ function generateECChallenge() {
   };
 }
 
-
+FLY_ENV='PRD'
 
 const port = process.env.PORT || 8449;
 // Create HTTPS server
